@@ -5,13 +5,25 @@ import logging
 from pathlib import Path
 import multiprocessing as mp
 import time
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional
 
-from numpy import record
 from ztrack.datatype import ArtifactDataType, Event
-from ztrack.event_recorder import EventRecordCallback, EventRecorder, LocalEventRecorder, MpEventRecorderMaster, SaveArtifactParam
+from ztrack.event_recorder import EventRecordCallback, EventRecorder, MpEventRecorderMaster, SaveArtifactParam
 
 lib_logger = logging.getLogger(__name__)
+
+SaveFunc = Callable[[Any, Path], None]
+
+
+class DotDict(object):
+    def __init__(self, d: Dict) -> None:
+        self._d = d
+
+    def __getattr__(self, name):
+        return self._d[name]
+
+    def dict(self):
+        return self._d
 
 
 @dataclass
@@ -51,6 +63,9 @@ class Tracker(object):
         self._tracks_buf: List[TrackItem] = []  # for defer commit
 
     def clone(self, move: bool = False):
+
+        if not self._recorder:
+            raise ValueError("tracker has already been moved, can't clone")
 
         if move:
             recorder = self._recorder
@@ -114,6 +129,7 @@ class Tracker(object):
 
     @contextlib.contextmanager
     def span(self, name: str, log_end_span: bool = False):
+        assert self._recorder
         span_id = self._recorder.next_span_id()
         tracker = self.with_settings(meta={
             'span.id': span_id,
@@ -147,7 +163,7 @@ class Tracker(object):
                 'span.elapsed_ms': elapsed_ms,
             }, type='z.span'))
 
-    def info(self, msg, exclude_fields: None = None, include_fields: None = None):
+    def info(self, msg, exclude_fields: Optional[List[str]] = None, include_fields: Optional[List[str]] = None):
         return self.log(logging.INFO, msg, exclude_fields, include_fields)
 
     def error(self, msg, exclude_fields: None = None, include_fields: None = None):
@@ -159,7 +175,7 @@ class Tracker(object):
     def debug(self, msg, exclude_fields: None = None, include_fields: None = None):
         return self.log(logging.DEBUG, msg, exclude_fields, include_fields)
 
-    def log(self, level: int, msg: str, exclude_fields: None, include_fields: None):
+    def log(self, level: int, msg: str, exclude_fields: Optional[List[str]] = None, include_fields: Optional[List[str]] = None):
         if self._settings.record_log_event:
             evt = self._create_event()
             evt.type = "z.log"
@@ -177,12 +193,13 @@ class Tracker(object):
         if self._recorder:
             self._recorder.unshare()
 
-    def Artifact(self, data: Any, save_func: Callable[[Any, Path], None], prefix: str = "", persist_name: str = "", format: str = "bin", meta: Optional[Dict] = None) -> ArtifactDataType:
+    def Artifact(self, data: Any, save_func: SaveFunc, prefix: str = "", persist_name: str = "", format: str = "bin", meta: Optional[Dict] = None) -> ArtifactDataType:
         """
         :param: data - data to save
         :param: save_func - (data, path) -> None, save_func to implement actual save logic
         :param: format - format of the artifact (@see ArtifactDataType)
         """
+        assert self._recorder
         if meta is None:
             meta = {}
 
@@ -190,6 +207,10 @@ class Tracker(object):
             SaveArtifactParam(data=data, save_func=save_func, prefix=prefix,
                               persist_name=persist_name, format=format, meta=meta)
         )
+
+    def clone_artifact(self, src: ArtifactDataType, dest_name: str) -> ArtifactDataType:
+        assert self._recorder
+        return self._recorder.clone_artifact(src, dest_name)
 
     def track_config(self, data: Any, name: str, encoder: Optional[Callable[[Any], Any]] = None):
         def yaml_saver(data: Any, path: Path):
@@ -212,9 +233,10 @@ class Tracker(object):
         }, meta={'z.type': 'config'})
 
     def register_event_callback(self, cb: EventRecordCallback):
+        assert self._recorder
         self._recorder.register_callback(cb)
 
-    def _format_log_fields(self, exclude_fields: None, include_fields: None) -> str:
+    def _format_log_fields(self, exclude_fields: Optional[List[str]] = None, include_fields: Optional[List[str]] = None) -> str:
         field_keys = set(self._fields.keys())
         if exclude_fields:
             field_keys -= set(exclude_fields)
@@ -227,6 +249,9 @@ class Tracker(object):
             value = self._fields[k]
             if isinstance(value, str):
                 value = f"\"{value}\""
+
+            elif isinstance(value, ArtifactDataType):
+                value = f"'{value.name}.{value.format}'"
 
             fields.append(f"{k}={value}")
 
@@ -245,7 +270,9 @@ class Tracker(object):
         reporter = self._settings.reporter
         if len(reporter) == 0:
             reporter = "default"
-        return self._recorder.record_event(evt, reporter)
+
+        if self._recorder:
+            self._recorder.record_event(evt, reporter)
 
     def _create_event(self, meta: Optional[Dict] = None, type: str = "") -> Event:
         if meta:
@@ -272,16 +299,16 @@ def _start_event_record_master(master: MpEventRecorderMaster):
 class MultiProcessTrackerManager(object):
     """Tracker manager to create multiprocess-safe tracker"""
 
-    def __init__(self, result_dir: Path, dry_run: bool) -> None:
+    def __init__(self, result_dir: Path, dry_run: bool, num_buffers: int) -> None:
         self._event_record_master = MpEventRecorderMaster(
-            result_dir=result_dir, dry_run=dry_run
+            result_dir=result_dir, dry_run=dry_run, num_buffers=num_buffers
         )
         self._result_dir = result_dir
         self._dry_run = dry_run
 
         self._process: Optional[mp.Process] = None
 
-        self._local_tracker = Tracker(
+        self._local_tracker: Tracker = Tracker(
             recorder=self._event_record_master.create_client(),
             # recorder=LocalEventRecorder(self._result_dir, self._dry_run),
             logger=logging.getLogger("ztrack"),
@@ -331,8 +358,18 @@ class MultiProcessTrackerManager(object):
         self._event_record_master.stop()
         self._local_tracker.finalize()
         # print(f"share_cnt={self._local_tracker._recorder._share_cnt}")
-        self._local_tracker = None
         # TODO: join ?
         if self._process:
             self._process.join(timeout=5)
         self._process = None
+
+
+class RoundRobinIDPool(object):
+    def __init__(self, max_size: int) -> None:
+        self.id = 0
+        self.max_size = max_size
+        pass
+
+    def next_id(self) -> str:
+        self.id = (self.id + 1) % self.max_size
+        return str(self.id)

@@ -7,9 +7,10 @@ from typing import Any, Dict, List, Literal, Union
 @dataclass
 class ArtifactDataType:
     _type_: Literal["artifact"]
+    name: str
     url: str
     format: str = ""
-    meta: Dict[str, Any] = ""
+    meta: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
 DataType = Union[float, int, str, bool,

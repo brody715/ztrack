@@ -42,11 +42,27 @@ def _handle_save_artifact(p: SaveArtifactParam, artifacts_dir: Path, artifact_id
 
     return ArtifactDataType(
         _type_='artifact',
-        url=artifact_name,
+        name=name,
+        url=artifact_path.as_posix(),
         format=format,
         meta=p.meta,
     )
-    pass
+
+
+def _handle_clone_artifact(artifacts_dir: Path, src: ArtifactDataType, dest_name: str, dry_run: bool) -> ArtifactDataType:
+    artifact_path = artifacts_dir / f'{dest_name}.{src.format}'
+
+    if not dry_run:
+        import shutil
+        shutil.copyfile(src.url, artifact_path.as_posix())
+
+    return ArtifactDataType(
+        _type_='artifact',
+        name=dest_name,
+        url=artifact_path.as_posix(),
+        format=src.format,
+        meta=src.meta
+    )
 
 
 def _handle_run_callbacks(callbacks, evt, reporter):
@@ -62,6 +78,7 @@ class EventRecorder(Protocol):
 
     def next_span_id(self) -> str: ...
     def save_artifact(self, param: SaveArtifactParam) -> ArtifactDataType: ...
+    def clone_artifact(self, src: ArtifactDataType, dest_name: str) -> ArtifactDataType: ...
     def register_callback(self, cb: 'EventRecordCallback') -> None: ...
     def record_event(self, evt: Event, reporter: str) -> None: ...
     def share(self) -> 'EventRecorder': ...
@@ -71,7 +88,7 @@ class EventRecorder(Protocol):
 class MpEventRecorderClient(EventRecorder):
     """EventRecorder client, not thread-safe, used in multi-process"""
 
-    def __init__(self, queue: mp.Queue, client_id: str, artifacts_dir: Path, dry_run: bool) -> None:
+    def __init__(self, queue: queue.Queue, client_id: str, artifacts_dir: Path, dry_run: bool) -> None:
         self._queue = queue
         self._client_id = client_id
         self._artifacts_dir = artifacts_dir
@@ -88,6 +105,9 @@ class MpEventRecorderClient(EventRecorder):
 
     def save_artifact(self, param: SaveArtifactParam) -> ArtifactDataType:
         return _handle_save_artifact(param, self._artifacts_dir, self._next_artifact_id(), self._dry_run)
+
+    def clone_artifact(self, src: ArtifactDataType, dest_name: str) -> ArtifactDataType:
+        return _handle_clone_artifact(self._artifacts_dir, src, dest_name, self._dry_run)
 
     def register_callback(self, cb: 'EventRecordCallback') -> None:
         self._event_record_callbacks.append(cb)
@@ -119,7 +139,7 @@ class MpEventRecorderClient(EventRecorder):
 class LocalEventRecorder(EventRecorder):
     """Used only in one thread, not thread-safe"""
 
-    def __init__(self, result_dir: Path, dry_run: bool) -> None:
+    def __init__(self, result_dir: Path, dry_run: bool, num_buffers: int) -> None:
         self._result_dir = result_dir
         self._artifacts_dir = self._result_dir / 'artifacts'
         self._reporters: Dict[str, EventReporter] = {}
@@ -129,6 +149,7 @@ class LocalEventRecorder(EventRecorder):
         self._span_id = 2000
 
         self._dry_run = dry_run
+        self._num_buffers = num_buffers
 
         if not self._dry_run:
             self._result_dir.mkdir(parents=True, exist_ok=True)
@@ -145,8 +166,11 @@ class LocalEventRecorder(EventRecorder):
         return str(self._span_id)
 
     def save_artifact(self, p: SaveArtifactParam) -> ArtifactDataType:
-        _handle_save_artifact(p, self._artifacts_dir,
-                              self._get_artifact_id(), self._dry_run)
+        return _handle_save_artifact(p, self._artifacts_dir,
+                                     self._get_artifact_id(), self._dry_run)
+
+    def clone_artifact(self, src: ArtifactDataType, dest_name: str) -> ArtifactDataType:
+        return _handle_clone_artifact(self._artifacts_dir, src, dest_name, self._dry_run)
 
     def register_callback(self, cb: 'EventRecordCallback'):
         self._event_record_callbacks.append(cb)
@@ -185,7 +209,7 @@ class LocalEventRecorder(EventRecorder):
         reporter = self._reporters.get(name, None)
         if not reporter:
             reporter = EventReporter(
-                name, self._result_dir / f'{name}.event.json')
+                name, self._result_dir / f'{name}.event.json', num_buffers=self._num_buffers)
             self._reporters[name] = reporter
         return reporter
 
@@ -231,7 +255,7 @@ EventRecordCallback = Callable[[Event, str], None]
 
 
 class MpEventRecorderMaster(object):
-    def __init__(self, result_dir: Path, dry_run: bool) -> None:
+    def __init__(self, result_dir: Path, dry_run: bool, num_buffers: int) -> None:
         self._manager = mp.Manager()
         # the queue may be pickled, so we use manager (such as used in pool)
         self._queue = self._manager.Queue(maxsize=200)
@@ -242,6 +266,7 @@ class MpEventRecorderMaster(object):
         self._result_dir = result_dir
         self._dry_run = dry_run
         self._artifacts_dir = result_dir / "artifacts"
+        self._num_buffers = num_buffers
 
         if not self._dry_run:
             self._result_dir.mkdir(exist_ok=True, parents=True)
@@ -256,13 +281,14 @@ class MpEventRecorderMaster(object):
         self._started_flag.set()
         clients_done = set()
         with LocalEventRecorder(
-                result_dir=self._result_dir, dry_run=self._dry_run) as event_recorder:
+                result_dir=self._result_dir, dry_run=self._dry_run, num_buffers=self._num_buffers) as event_recorder:
             while True:
                 try:
                     value = self._queue.get(timeout=3)
                 except queue.Empty:
                     if self._stopped_flag.is_set():
                         break
+                    continue
 
                 if value[0] == "close":
                     clients_done.add(value[1])
@@ -271,7 +297,7 @@ class MpEventRecorderMaster(object):
                     # end loop if marked finished
                     if self._stopped_flag.is_set():
                         with self._num_clients.get_lock():
-                            if len(clients_done) == self._num_clients.value:
+                            if len(clients_done) == self._num_clients.value:  # type: ignore
                                 break
                     continue
 
@@ -295,6 +321,6 @@ class MpEventRecorderMaster(object):
 
         client_id = "<no-set>"
         with self._num_clients.get_lock():
-            self._num_clients.value += 1
-            client_id = str(self._num_clients.value)
+            self._num_clients.value += 1  # type: ignore
+            client_id = str(self._num_clients.value)  # type: ignore
         return MpEventRecorderClient(queue=self._queue, client_id=client_id, artifacts_dir=self._artifacts_dir, dry_run=self._dry_run)

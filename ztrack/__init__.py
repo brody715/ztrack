@@ -1,17 +1,18 @@
 import logging
 from pathlib import Path
-from typing import Any, Union
+from typing import Optional, Union
 from ztrack.event_recorder import LocalEventRecorder
 from ztrack.reader import Reader
-from ztrack.tracker import MultiProcessTrackerManager, Tracker, TrackerSetting
+from ztrack.tracker import MultiProcessTrackerManager, SaveFunc, Tracker, TrackerSetting, DotDict, RoundRobinIDPool
 from ztrack.datatype import Event
 
 
-def create(result_dir: Union[str, Path], dry_run=False) -> Tracker:
+def create(result_dir: Union[str, Path], dry_run=False, num_buffers=10) -> Tracker:
     import time
 
     result_dir = Path(result_dir)
-    recorder = LocalEventRecorder(result_dir, dry_run=dry_run)
+    recorder = LocalEventRecorder(
+        result_dir, dry_run=dry_run, num_buffers=num_buffers)
 
     return Tracker(
         recorder=recorder,
@@ -22,11 +23,12 @@ def create(result_dir: Union[str, Path], dry_run=False) -> Tracker:
     )
 
 
-def create_mp(result_dir: Union[str, Path], dry_run=False) -> MultiProcessTrackerManager:
+def create_mp(result_dir: Union[str, Path], dry_run=False, num_buffers=10) -> MultiProcessTrackerManager:
     result_dir = Path(result_dir)
     return MultiProcessTrackerManager(
         result_dir=result_dir,
-        dry_run=dry_run
+        dry_run=dry_run,
+        num_buffers=num_buffers
     )
 
 
@@ -42,10 +44,12 @@ __all__ = [
     "Tracker",
     "Reader",
     "Event",
+    "DotDict",
+    "RoundRobinIDPool",
     "create",
     "reader",
     "str_datetime",
-    "save_yaml"
+    "saver_yaml"
 ]
 
 
@@ -56,13 +60,50 @@ def str_datetime() -> str:
     return time.strftime("%Y%m%d-%H%M%S", time.localtime())
 
 
-def save_yaml(data: Any, path: Path):
-    import yaml
-    with path.open("w") as f:
-        yaml.dump(data, f)
+def float_to_fixed(val: float, digits: int) -> float:
+    """Return float with at-most num of digits.
+
+    >>> float_to_fixed(1.234, 2)
+    1.23
+    >>> float_to_fixed(1.0, 3)
+    1.0
+    """
+    num = 10 ** digits
+    return int(val * num) // num
+
+
+def saver_yaml() -> SaveFunc:
+    def saver(data, path: Path):
+        import yaml
+        with path.open("w") as f:
+            yaml.dump(data, f)
+
+    return saver
+
+
+def saver_json(indent: Optional[str] = None) -> SaveFunc:
+    def saver(data, path: Path):
+        import json
+        with path.open("w") as f:
+            json.dump(data, f, indent=indent)
+    return saver
+
+
+def saver_torch_model() -> SaveFunc:
+    def saver(data, path: Path):
+        import torch
+        torch.save(data, path)
+    return saver
+
 
 def encode_pydantic(data):
     return data.dict()
 
+
 def encode_pydantic_list(data):
     return [item.dict() for item in data]
+
+
+if __name__ == '__main__':
+    import doctest
+    doctest.testmod()
