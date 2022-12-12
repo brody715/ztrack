@@ -5,7 +5,7 @@ def main():
     with ztrack.create(result_dir=f"{ztrack.str_cwd()}/tracks-{ztrack.str_datetime()}") as tracker:
         data = b''
 
-        tracker = tracker.with_config(
+        tracker = tracker.with_settings(
             reporter='ai', meta=dict(step=1, epoch=1)
         )
 

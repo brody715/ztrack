@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import dataclasses
 import json
-from typing import Any, Callable, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Union
 
 
 @dataclass
@@ -25,6 +25,20 @@ class Event:
     perf_ts: int
     meta: Dict[str, Any]  # must be msgpack serializable
     data: Dict[str, DataType]
+
+    @staticmethod
+    def from_json(str):
+        d = json.loads(str)
+
+        # TODO: support artifact type
+        return Event(
+            id=d['id'],
+            type=d['type'],
+            ts=d['ts'],
+            perf_ts=int(d['perf_ts']),
+            meta=d['meta'],
+            data=d['data']
+        )
 
     def write_json(self, f):
         d = dataclasses.asdict(self)

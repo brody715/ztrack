@@ -16,7 +16,7 @@ def main():
 
         for epoch in range(100):
             for idx in range(100):
-                tracker = tracker.with_config(
+                tracker = tracker.with_settings(
                     meta=dict(step=epoch * 100 + idx, epoch=epoch))
                 tracker.track({
                     'name': 'hello, world',
