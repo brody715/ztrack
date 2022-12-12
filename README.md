@@ -1,6 +1,6 @@
 # ZTracker
 
-ZTracker is a simple and loca-first experiment tracker for Python and AI.
+ZTracker is a simple and local-first experiment tracker for Python and AI.
 
 # Credits
 

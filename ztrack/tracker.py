@@ -3,141 +3,15 @@ from dataclasses import dataclass
 import datetime
 import logging
 from pathlib import Path
+import multiprocessing as mp
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
+
+from numpy import record
 from ztrack.datatype import ArtifactDataType, Event
+from ztrack.event_recorder import EventRecordCallback, EventRecorder, LocalEventRecorder, MpEventRecorderMaster, SaveArtifactParam
 
 lib_logger = logging.getLogger(__name__)
-
-
-class EventReporter(object):
-    def __init__(self, name: str, out_file_path: Path, num_buffers: int = 10) -> None:
-        """
-
-        :param: num_buffer - every {num_buffer} events, write
-        """
-        self._name = name
-        self._out_file = out_file_path.open('a+')
-        self._num_buffers = num_buffers
-        self._buffers: List[Event] = []
-
-        self._evt_id = 0
-
-    def record_event(self, evt: Event):
-        evt.id = self._get_evt_id()
-        self._buffers.append(evt)
-
-        if len(self._buffers) > self._num_buffers:
-            self._flush()
-
-    def _flush(self):
-        for evt in self._buffers:
-            evt.write_json(self._out_file)
-            self._out_file.write('\n')
-        self._buffers = []
-        self._out_file.flush()
-
-    def _get_evt_id(self):
-        self._evt_id += 1
-        return str(self._evt_id)
-
-    def finalize(self):
-        self._flush()
-        self._out_file.close()
-
-
-# (event, reporter) -> ()
-EventRecordCallback = Callable[[Event, str], None]
-
-
-class EventRecorder(object):
-    def __init__(self, result_dir: Path, dry_run: bool) -> None:
-        self._result_dir = result_dir
-        self._artifacts_dir = self._result_dir / 'artifacts'
-        self._reporters: Dict[str, EventReporter] = {}
-
-        self._share_cnt = 0
-        self._artifact_id = 1000
-        self._span_id = 2000
-
-        self._dry_run = dry_run
-
-        if not self._dry_run:
-            self._result_dir.mkdir(parents=True, exist_ok=True)
-            self._artifacts_dir.mkdir(exist_ok=True)
-
-        self._event_record_callbacks: List[EventRecordCallback] = []
-
-    def _get_artifact_id(self):
-        self._artifact_id += 1
-        return str(self._artifact_id)
-
-    def next_span_id(self):
-        self._span_id += 1
-        return str(self._span_id)
-
-    def save_artifact(self, data: Any, save_func: Callable[[Any, Path], None], prefix, persist_name: str, format: str, meta: Dict) -> ArtifactDataType:
-        if len(format) == 0:
-            format = "bin"
-
-        if len(prefix) == 0:
-            prefix = "data"
-
-        name = f'{prefix}_{self._get_artifact_id()}'
-        if persist_name:
-            name = persist_name
-
-        artifact_name = f'{name}.{format}'
-        artifact_path = self._artifacts_dir / artifact_name
-
-        if not self._dry_run:
-            # save data
-            save_func(data, artifact_path)
-
-        return ArtifactDataType(
-            _type_='artifact',
-            url=artifact_name,
-            format=format,
-            meta=meta,
-        )
-
-    def register_callback(self, cb: EventRecordCallback):
-        self._event_record_callbacks.append(cb)
-
-    def record_event(self, evt: Event, reporter: str):
-        if not self._dry_run:
-            self._get_reporter(reporter).record_event(evt)
-
-        for callback in self._event_record_callbacks:
-            try:
-                callback(evt, reporter)
-            except Exception:
-                lib_logger.warn("failed to run callback", exc_info=True)
-
-    def share(self) -> 'EventRecorder':
-        self._share_cnt += 1
-        return self
-
-    def unshare(self):
-        self._share_cnt -= 1
-        if self._share_cnt == 0:
-            self._finalize()
-
-    def _finalize(self):
-        for _, reporter in self._reporters.items():
-            reporter.finalize()
-        self._reporters = {}
-
-    def __del__(self):
-        self._finalize()
-
-    def _get_reporter(self, name: str):
-        reporter = self._reporters.get(name, None)
-        if not reporter:
-            reporter = EventReporter(
-                name, self._result_dir / f'{name}.event.json')
-            self._reporters[name] = reporter
-        return reporter
 
 
 @dataclass
@@ -164,6 +38,8 @@ class TrackItem:
 
 
 class Tracker(object):
+    """Tracker is a stateless object (only have local state), all the event and related states are managed by EventRecorder"""
+
     def __init__(self, recorder: EventRecorder, logger: logging.Logger, settings: TrackerSetting, fields: Dict, perf_timer_ns: int) -> None:
         self._recorder = recorder
         self._settings = settings
@@ -174,28 +50,45 @@ class Tracker(object):
         # tracker local variables
         self._tracks_buf: List[TrackItem] = []  # for defer commit
 
-    def clone(self):
+    def clone(self, move: bool = False):
+
+        if move:
+            recorder = self._recorder
+            self._recorder = None
+        else:
+            recorder = self._recorder.share()
+
         return Tracker(
-            recorder=self._recorder.share(),
+            recorder=recorder,
             settings=self._settings,
             fields=self._fields,
             logger=self._logger,
             perf_timer_ns=self._perf_timer_ns,
         )
 
-    def with_settings(self, reporter: str = "", meta: Optional[Dict] = None, record_log_event: Optional[bool] = None):
+    def clone_with_recorder(self, event_recorder: EventRecorder):
+        """needed to impl thread-safe tracker"""
+        return Tracker(
+            recorder=event_recorder,
+            settings=self._settings,
+            fields=self._fields,
+            logger=self._logger,
+            perf_timer_ns=self._perf_timer_ns
+        )
+
+    def with_settings(self, reporter: str = "", meta: Optional[Dict] = None, record_log_event: Optional[bool] = None, move: bool = False):
         if meta is None:
             meta = {}
 
         new_settings = self._settings.merge(
             TrackerSetting(reporter, meta, record_log_event))
-        tracker = self.clone()
+        tracker = self.clone(move)
         tracker._settings = new_settings
         return tracker
 
-    def with_fields(self, fields: Dict):
+    def with_fields(self, fields: Dict, move: bool = False):
         new_fields = {**self._fields, **fields}
-        tracker = self.clone()
+        tracker = self.clone(move)
         tracker._fields = new_fields
         return tracker
 
@@ -281,7 +174,8 @@ class Tracker(object):
         return self
 
     def finalize(self):
-        self._recorder.unshare()
+        if self._recorder:
+            self._recorder.unshare()
 
     def Artifact(self, data: Any, save_func: Callable[[Any, Path], None], prefix: str = "", persist_name: str = "", format: str = "bin", meta: Optional[Dict] = None) -> ArtifactDataType:
         """
@@ -292,16 +186,27 @@ class Tracker(object):
         if meta is None:
             meta = {}
 
-        return self._recorder.save_artifact(data=data, save_func=save_func, prefix=prefix, persist_name=persist_name, format=format, meta=meta)
+        return self._recorder.save_artifact(
+            SaveArtifactParam(data=data, save_func=save_func, prefix=prefix,
+                              persist_name=persist_name, format=format, meta=meta)
+        )
 
-    def track_config(self, data: Any, name: str):
+    def track_config(self, data: Any, name: str, encoder: Optional[Callable[[Any], Any]] = None):
         def yaml_saver(data: Any, path: Path):
             import yaml
             with open(path, 'w') as f:
                 yaml.safe_dump(data, f)
 
-        data = self.Artifact(data, save_func=yaml_saver,
-                             persist_name=name, format='yaml')
+        def json_saver(data: Any, path: Path):
+            import json
+            with open(path, 'w') as f:
+                json.dump(data, f, indent=2)
+
+        if encoder:
+            data = encoder(data)
+
+        data = self.Artifact(data, save_func=json_saver,
+                             persist_name=name, format='json')
         self.track({
             'config': data
         }, meta={'z.type': 'config'})
@@ -358,3 +263,76 @@ class Tracker(object):
                 **self._fields,
             }
         )
+
+
+def _start_event_record_master(master: MpEventRecorderMaster):
+    master.start()
+
+
+class MultiProcessTrackerManager(object):
+    """Tracker manager to create multiprocess-safe tracker"""
+
+    def __init__(self, result_dir: Path, dry_run: bool) -> None:
+        self._event_record_master = MpEventRecorderMaster(
+            result_dir=result_dir, dry_run=dry_run
+        )
+        self._result_dir = result_dir
+        self._dry_run = dry_run
+
+        self._process: Optional[mp.Process] = None
+
+        self._local_tracker = Tracker(
+            recorder=self._event_record_master.create_client(),
+            # recorder=LocalEventRecorder(self._result_dir, self._dry_run),
+            logger=logging.getLogger("ztrack"),
+            settings=TrackerSetting(reporter="", meta={}),
+            fields={},
+            perf_timer_ns=time.perf_counter_ns()
+        )
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, e1, e2, e3):
+        self.stop()
+
+    # @property
+    # def tracker(self) -> Tracker:
+    #     return self._local_tracker
+
+    def add_fields(self, fields: Dict):
+        self._local_tracker = self._local_tracker.with_fields(
+            fields, move=True)
+
+    def add_settings(self, reporter: str = "", meta: Optional[None] = None, record_log_event: Optional[bool] = None):
+        self._local_tracker = self._local_tracker.with_settings(
+            reporter, meta, record_log_event, move=True)
+
+    def track_config(self, data: Any, name: str, encoder: Optional[Callable[[Any], Any]] = None):
+        self._local_tracker.track_config(data, name, encoder)
+
+    def create_tracker(self) -> Tracker:
+        return self._local_tracker.clone_with_recorder(
+            self._event_record_master.create_client()
+        )
+
+    def start(self):
+        if self._process:
+            return
+
+        self._process = mp.Process(
+            target=_start_event_record_master, args=(self._event_record_master,))
+        self._process.start()
+
+    def stop(self):
+        if not self._process:
+            return
+        self._event_record_master.stop()
+        self._local_tracker.finalize()
+        # print(f"share_cnt={self._local_tracker._recorder._share_cnt}")
+        self._local_tracker = None
+        # TODO: join ?
+        if self._process:
+            self._process.join(timeout=5)
+        self._process = None

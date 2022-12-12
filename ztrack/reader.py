@@ -26,9 +26,15 @@ class EventFileReader(object):
 
                 event = Event.from_json(line)
 
+                filtered = True
                 for filter in self._filters:
                     if not filter(event):
-                        continue
+                        filtered = False
+                        break
+
+                if not filtered:
+                    continue
+
                 yield event
 
     def read_all(self) -> List[Event]:
@@ -40,7 +46,7 @@ class EventFileReader(object):
 
     def datas_to_pandas(self):
         import pandas as pd
-        datas = [evt.data for evt in self.read_all()]
+        datas = [evt.data for evt in self.iter_read()]
         return pd.DataFrame(datas)
 
 

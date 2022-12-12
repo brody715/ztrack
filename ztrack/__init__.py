@@ -1,17 +1,17 @@
 import logging
 from pathlib import Path
 from typing import Any, Union
+from ztrack.event_recorder import LocalEventRecorder
 from ztrack.reader import Reader
-from ztrack.tracker import Tracker, TrackerSetting
+from ztrack.tracker import MultiProcessTrackerManager, Tracker, TrackerSetting
 from ztrack.datatype import Event
 
 
 def create(result_dir: Union[str, Path], dry_run=False) -> Tracker:
-    from ztrack.tracker import EventRecorder
     import time
 
     result_dir = Path(result_dir)
-    recorder = EventRecorder(result_dir, dry_run=dry_run)
+    recorder = LocalEventRecorder(result_dir, dry_run=dry_run)
 
     return Tracker(
         recorder=recorder,
@@ -19,6 +19,14 @@ def create(result_dir: Union[str, Path], dry_run=False) -> Tracker:
         settings=TrackerSetting("default", {}),
         fields={},
         perf_timer_ns=time.perf_counter_ns(),
+    )
+
+
+def create_mp(result_dir: Union[str, Path], dry_run=False) -> MultiProcessTrackerManager:
+    result_dir = Path(result_dir)
+    return MultiProcessTrackerManager(
+        result_dir=result_dir,
+        dry_run=dry_run
     )
 
 
@@ -52,3 +60,9 @@ def save_yaml(data: Any, path: Path):
     import yaml
     with path.open("w") as f:
         yaml.dump(data, f)
+
+def encode_pydantic(data):
+    return data.dict()
+
+def encode_pydantic_list(data):
+    return [item.dict() for item in data]
