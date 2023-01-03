@@ -1,5 +1,6 @@
+import itertools
 from pathlib import Path
-from typing import Callable, List
+from typing import Any, Callable, Dict, List
 
 from ztrack.datatype import Event
 
@@ -44,9 +45,15 @@ class EventFileReader(object):
             events.append(event)
         return events
 
-    def datas_to_pandas(self):
+    def datas_to_pandas(self, stop=None, normalize_json=False):
         import pandas as pd
-        datas = [evt.data for evt in self.iter_read()]
+        datas = []
+
+        it = itertools.islice(self.iter_read(), stop)
+        datas = [evt.data for evt in it]
+
+        if normalize_json:
+            return pd.json_normalize(datas)
         return pd.DataFrame(datas)
 
 
