@@ -255,10 +255,9 @@ EventRecordCallback = Callable[[Event, str], None]
 
 
 class MpEventRecorderMaster(object):
-    def __init__(self, result_dir: Path, dry_run: bool, num_buffers: int) -> None:
-        self._manager = mp.Manager()
+    def __init__(self, manager, result_dir: Path, dry_run: bool, num_buffers: int) -> None:
         # the queue may be pickled, so we use manager (such as used in pool)
-        self._queue = self._manager.Queue(maxsize=200)
+        self._queue = manager.Queue(maxsize=200)
         self._num_clients = mp.Value('i', 0)
         self._stopped_flag = mp.Event()
         self._started_flag = mp.Event()

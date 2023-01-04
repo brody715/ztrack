@@ -300,7 +300,9 @@ class MultiProcessTrackerManager(object):
     """Tracker manager to create multiprocess-safe tracker"""
 
     def __init__(self, result_dir: Path, dry_run: bool, num_buffers: int) -> None:
+        self._manager = mp.Manager()
         self._event_record_master = MpEventRecorderMaster(
+            self._manager,
             result_dir=result_dir, dry_run=dry_run, num_buffers=num_buffers
         )
         self._result_dir = result_dir
