@@ -255,6 +255,8 @@ class Tracker(object):
 
             fields.append(f"{k}={value}")
 
+        fields.sort()
+
         return " ".join(fields)
 
     def __enter__(self):
