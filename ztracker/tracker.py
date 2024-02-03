@@ -7,8 +7,13 @@ import multiprocessing as mp
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-from ztrack.datatype import ArtifactDataType, Event
-from ztrack.event_recorder import EventRecordCallback, EventRecorder, MpEventRecorderMaster, SaveArtifactParam
+from ztracker.datatype import ArtifactDataType, Event
+from ztracker.event_recorder import (
+    EventRecordCallback,
+    EventRecorder,
+    MpEventRecorderMaster,
+    SaveArtifactParam,
+)
 
 lib_logger = logging.getLogger(__name__)
 
@@ -32,9 +37,8 @@ class TrackerSetting:
     meta: Dict
     record_log_event: Optional[bool] = None
 
-    def merge(self, new_cfg: 'TrackerSetting') -> 'TrackerSetting':
-        reporter = new_cfg.reporter if len(
-            new_cfg.reporter) != 0 else self.reporter
+    def merge(self, new_cfg: "TrackerSetting") -> "TrackerSetting":
+        reporter = new_cfg.reporter if len(new_cfg.reporter) != 0 else self.reporter
 
         record_log_event = self.record_log_event
         if new_cfg.record_log_event is not None:
@@ -52,7 +56,14 @@ class TrackItem:
 class Tracker(object):
     """Tracker is a stateless object (only have local state), all the event and related states are managed by EventRecorder"""
 
-    def __init__(self, recorder: EventRecorder, logger: logging.Logger, settings: TrackerSetting, fields: Dict, perf_timer_ns: int) -> None:
+    def __init__(
+        self,
+        recorder: EventRecorder,
+        logger: logging.Logger,
+        settings: TrackerSetting,
+        fields: Dict,
+        perf_timer_ns: int,
+    ) -> None:
         self._recorder = recorder
         self._settings = settings
         self._fields = fields
@@ -63,7 +74,6 @@ class Tracker(object):
         self._tracks_buf: List[TrackItem] = []  # for defer commit
 
     def clone(self, move: bool = False):
-
         if not self._recorder:
             raise ValueError("tracker has already been moved, can't clone")
 
@@ -88,15 +98,22 @@ class Tracker(object):
             settings=self._settings,
             fields=self._fields,
             logger=self._logger,
-            perf_timer_ns=self._perf_timer_ns
+            perf_timer_ns=self._perf_timer_ns,
         )
 
-    def with_settings(self, reporter: str = "", meta: Optional[Dict] = None, record_log_event: Optional[bool] = None, move: bool = False):
+    def with_settings(
+        self,
+        reporter: str = "",
+        meta: Optional[Dict] = None,
+        record_log_event: Optional[bool] = None,
+        move: bool = False,
+    ):
         if meta is None:
             meta = {}
 
         new_settings = self._settings.merge(
-            TrackerSetting(reporter, meta, record_log_event))
+            TrackerSetting(reporter, meta, record_log_event)
+        )
         tracker = self.clone(move)
         tracker._settings = new_settings
         return tracker
@@ -107,7 +124,12 @@ class Tracker(object):
         tracker._fields = new_fields
         return tracker
 
-    def track(self, fields: Optional[Dict] = None, meta: Optional[Dict] = None, commit: bool = True):
+    def track(
+        self,
+        fields: Optional[Dict] = None,
+        meta: Optional[Dict] = None,
+        commit: bool = True,
+    ):
         self._tracks_buf.append(TrackItem(fields, meta))
 
         if commit:
@@ -121,7 +143,7 @@ class Tracker(object):
             self._tracks_buf = []
 
             evt = self._create_event(meta)
-            evt.type = 'z.tk'
+            evt.type = "z.tk"
             evt.data = fields
             self._record_event(evt)
 
@@ -131,39 +153,53 @@ class Tracker(object):
     def span(self, name: str, log_end_span: bool = False):
         assert self._recorder
         span_id = self._recorder.next_span_id()
-        tracker = self.with_settings(meta={
-            'span.id': span_id,
-            'span.name': name,
-        })
-        tracker._record_event(self._create_event(meta={
-            'span.id': span_id,
-            'span.name': name,
-            'span.event': 'started'
-        }, type='z.span'))
+        tracker = self.with_settings(
+            meta={
+                "span.id": span_id,
+                "span.name": name,
+            }
+        )
+        tracker._record_event(
+            self._create_event(
+                meta={"span.id": span_id, "span.name": name, "span.event": "started"},
+                type="z.span",
+            )
+        )
 
         start_time_ns = time.perf_counter_ns()
         try:
-
             yield tracker
 
         finally:
             elapsed_ns = time.perf_counter_ns() - start_time_ns
-            elapsed_ms = (elapsed_ns / 10 ** 6) * 100 // 100
+            elapsed_ms = (elapsed_ns / 10**6) * 100 // 100
             if log_end_span:
-                tracker.with_fields({
-                    'span.id': span_id,
-                    'span.name': name,
-                    'span.elapsed_ms': elapsed_ms,
-                }).info('span end')
+                tracker.with_fields(
+                    {
+                        "span.id": span_id,
+                        "span.name": name,
+                        "span.elapsed_ms": elapsed_ms,
+                    }
+                ).info("span end")
 
-            tracker._record_event(self._create_event(meta={
-                'span.id': span_id,
-                'span.name': name,
-                'span.event': 'stopped',
-                'span.elapsed_ms': elapsed_ms,
-            }, type='z.span'))
+            tracker._record_event(
+                self._create_event(
+                    meta={
+                        "span.id": span_id,
+                        "span.name": name,
+                        "span.event": "stopped",
+                        "span.elapsed_ms": elapsed_ms,
+                    },
+                    type="z.span",
+                )
+            )
 
-    def info(self, msg, exclude_fields: Optional[List[str]] = None, include_fields: Optional[List[str]] = None):
+    def info(
+        self,
+        msg,
+        exclude_fields: Optional[List[str]] = None,
+        include_fields: Optional[List[str]] = None,
+    ):
         return self.log(logging.INFO, msg, exclude_fields, include_fields)
 
     def error(self, msg, exclude_fields: None = None, include_fields: None = None):
@@ -175,17 +211,27 @@ class Tracker(object):
     def debug(self, msg, exclude_fields: None = None, include_fields: None = None):
         return self.log(logging.DEBUG, msg, exclude_fields, include_fields)
 
-    def log(self, level: int, msg: str, exclude_fields: Optional[List[str]] = None, include_fields: Optional[List[str]] = None):
+    def log(
+        self,
+        level: int,
+        msg: str,
+        exclude_fields: Optional[List[str]] = None,
+        include_fields: Optional[List[str]] = None,
+    ):
         if self._settings.record_log_event:
             evt = self._create_event()
             evt.type = "z.log"
-            evt.data['log.level'] = logging.getLevelName(level)
-            evt.data['log.msg'] = msg
+            evt.data["log.level"] = logging.getLevelName(level)
+            evt.data["log.msg"] = msg
             self._record_event(evt)
 
         if self._logger.isEnabledFor(level):
-            self._logger.log(level, "%s %s", msg, self._format_log_fields(
-                exclude_fields, include_fields))
+            self._logger.log(
+                level,
+                "%s %s",
+                msg,
+                self._format_log_fields(exclude_fields, include_fields),
+            )
 
         return self
 
@@ -193,7 +239,15 @@ class Tracker(object):
         if self._recorder:
             self._recorder.unshare()
 
-    def Artifact(self, data: Any, save_func: SaveFunc, prefix: str = "", persist_name: str = "", format: str = "bin", meta: Optional[Dict] = None) -> ArtifactDataType:
+    def Artifact(
+        self,
+        data: Any,
+        save_func: SaveFunc,
+        prefix: str = "",
+        persist_name: str = "",
+        format: str = "bin",
+        meta: Optional[Dict] = None,
+    ) -> ArtifactDataType:
         """
         :param: data - data to save
         :param: save_func - (data, path) -> None, save_func to implement actual save logic
@@ -204,39 +258,52 @@ class Tracker(object):
             meta = {}
 
         return self._recorder.save_artifact(
-            SaveArtifactParam(data=data, save_func=save_func, prefix=prefix,
-                              persist_name=persist_name, format=format, meta=meta)
+            SaveArtifactParam(
+                data=data,
+                save_func=save_func,
+                prefix=prefix,
+                persist_name=persist_name,
+                format=format,
+                meta=meta,
+            )
         )
 
     def clone_artifact(self, src: ArtifactDataType, dest_name: str) -> ArtifactDataType:
         assert self._recorder
         return self._recorder.clone_artifact(src, dest_name)
 
-    def track_config(self, data: Any, name: str, encoder: Optional[Callable[[Any], Any]] = None):
+    def track_config(
+        self, data: Any, name: str, encoder: Optional[Callable[[Any], Any]] = None
+    ):
         def yaml_saver(data: Any, path: Path):
             import yaml
-            with open(path, 'w') as f:
+
+            with open(path, "w") as f:
                 yaml.safe_dump(data, f)
 
         def json_saver(data: Any, path: Path):
             import json
-            with open(path, 'w') as f:
+
+            with open(path, "w") as f:
                 json.dump(data, f, indent=2)
 
         if encoder:
             data = encoder(data)
 
-        data = self.Artifact(data, save_func=json_saver,
-                             persist_name=name, format='json')
-        self.track({
-            'config': data
-        }, meta={'z.type': 'config'})
+        data = self.Artifact(
+            data, save_func=json_saver, persist_name=name, format="json"
+        )
+        self.track({"config": data}, meta={"z.type": "config"})
 
     def register_event_callback(self, cb: EventRecordCallback):
         assert self._recorder
         self._recorder.register_callback(cb)
 
-    def _format_log_fields(self, exclude_fields: Optional[List[str]] = None, include_fields: Optional[List[str]] = None) -> str:
+    def _format_log_fields(
+        self,
+        exclude_fields: Optional[List[str]] = None,
+        include_fields: Optional[List[str]] = None,
+    ) -> str:
         field_keys = set(self._fields.keys())
         if exclude_fields:
             field_keys -= set(exclude_fields)
@@ -248,7 +315,7 @@ class Tracker(object):
         for k in field_keys:
             value = self._fields[k]
             if isinstance(value, str):
-                value = f"\"{value}\""
+                value = f'"{value}"'
 
             elif isinstance(value, ArtifactDataType):
                 value = f"'{value.name}.{value.format}'"
@@ -290,7 +357,7 @@ class Tracker(object):
             meta=meta,
             data={
                 **self._fields,
-            }
+            },
         )
 
 
@@ -305,7 +372,9 @@ class MultiProcessTrackerManager(object):
         self._manager = mp.Manager()
         self._event_record_master = MpEventRecorderMaster(
             self._manager,
-            result_dir=result_dir, dry_run=dry_run, num_buffers=num_buffers
+            result_dir=result_dir,
+            dry_run=dry_run,
+            num_buffers=num_buffers,
         )
         self._result_dir = result_dir
         self._dry_run = dry_run
@@ -315,10 +384,10 @@ class MultiProcessTrackerManager(object):
         self._local_tracker: Tracker = Tracker(
             recorder=self._event_record_master.create_client(),
             # recorder=LocalEventRecorder(self._result_dir, self._dry_run),
-            logger=logging.getLogger("ztrack"),
+            logger=logging.getLogger("ztracker"),
             settings=TrackerSetting(reporter="", meta={}),
             fields={},
-            perf_timer_ns=time.perf_counter_ns()
+            perf_timer_ns=time.perf_counter_ns(),
         )
 
     def __enter__(self):
@@ -333,14 +402,21 @@ class MultiProcessTrackerManager(object):
     #     return self._local_tracker
 
     def add_fields(self, fields: Dict):
-        self._local_tracker = self._local_tracker.with_fields(
-            fields, move=True)
+        self._local_tracker = self._local_tracker.with_fields(fields, move=True)
 
-    def add_settings(self, reporter: str = "", meta: Optional[None] = None, record_log_event: Optional[bool] = None):
+    def add_settings(
+        self,
+        reporter: str = "",
+        meta: Optional[None] = None,
+        record_log_event: Optional[bool] = None,
+    ):
         self._local_tracker = self._local_tracker.with_settings(
-            reporter, meta, record_log_event, move=True)
+            reporter, meta, record_log_event, move=True
+        )
 
-    def track_config(self, data: Any, name: str, encoder: Optional[Callable[[Any], Any]] = None):
+    def track_config(
+        self, data: Any, name: str, encoder: Optional[Callable[[Any], Any]] = None
+    ):
         self._local_tracker.track_config(data, name, encoder)
 
     def create_tracker(self) -> Tracker:
@@ -353,7 +429,8 @@ class MultiProcessTrackerManager(object):
             return
 
         self._process = mp.Process(
-            target=_start_event_record_master, args=(self._event_record_master,))
+            target=_start_event_record_master, args=(self._event_record_master,)
+        )
         self._process.start()
 
     def stop(self):

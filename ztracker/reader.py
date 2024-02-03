@@ -2,7 +2,7 @@ import itertools
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
-from ztrack.datatype import Event
+from ztracker.datatype import Event
 
 
 class EventFileReader(object):
@@ -18,7 +18,7 @@ class EventFileReader(object):
         return self
 
     def iter_read(self):
-        with self._event_file_path.open('r') as _event_file:
+        with self._event_file_path.open("r") as _event_file:
             while True:
                 line = _event_file.readline()
                 # eof
@@ -47,6 +47,7 @@ class EventFileReader(object):
 
     def datas_to_pandas(self, stop=None, normalize_json=False):
         import pandas as pd
+
         datas = []
 
         it = itertools.islice(self.iter_read(), stop)
@@ -63,9 +64,10 @@ class Reader(object):
     def __init__(self, result_dir: Path) -> None:
         self._result_dir = result_dir
 
-    def event_reader(self, reporter: str = 'default') -> EventFileReader:
+    def event_reader(self, reporter: str = "default") -> EventFileReader:
         event_file_path = self._result_dir / f"{reporter}.event.json"
         if not event_file_path.exists():
             raise ValueError(
-                f"event reporter file, reporter={reporter}, path={event_file_path.as_posix()} not exists")
+                f"event reporter file, reporter={reporter}, path={event_file_path.as_posix()} not exists"
+            )
         return EventFileReader(reporter, event_file_path)

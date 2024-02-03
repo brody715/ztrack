@@ -1,2 +1,2 @@
 include *.md *.txt
-recursive-include ztrack *.py
+recursive-include ztracker *.py
