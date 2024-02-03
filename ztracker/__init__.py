@@ -14,10 +14,15 @@ from ztracker.tracker import (
 from ztracker.datatype import Event
 
 
-def create(result_dir: Union[str, Path], dry_run=False, num_buffers=10) -> Tracker:
+def create(
+    result_dir: Union[str, Path, None], dry_run=False, num_buffers=10
+) -> Tracker:
     import time
 
-    result_dir = Path(result_dir)
+    if not dry_run and not result_dir:
+        raise ValueError("must specify result dir when dry_run=False")
+
+    result_dir = Path(result_dir or "ztracker")
     recorder = LocalEventRecorder(result_dir, dry_run=dry_run, num_buffers=num_buffers)
 
     return Tracker(
