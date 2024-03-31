@@ -27,7 +27,7 @@ def create(
 
     return Tracker(
         recorder=recorder,
-        logger=logging.getLogger("ztrackerer"),
+        logger=logging.getLogger("ztracker"),
         settings=TrackerSetting("default", {}),
         fields={},
         perf_timer_ns=time.perf_counter_ns(),
